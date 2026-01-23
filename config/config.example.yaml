@@ -1,0 +1,70 @@
+# Nextcloud Media Bridge configuration
+# Copy to config/config.yaml and fill in values.
+#
+# Example configurations:
+# 1. Direct TLS (default): Use use_tls: true with self-signed or custom certs
+# 2. Behind reverse proxy: Use use_tls: false and configure your reverse proxy
+#    to handle TLS and forward to http://bridge:29336
+
+nextcloud:
+  # WebDAV base URL (include /remote.php/dav/files/<user>/)
+  base_url: "https://nextcloud.example.com/remote.php/dav/files/media-bridge"
+  # Nextcloud web URL for generating direct file links (optional)
+  # Users will need to log in to view files. Leave empty to disable links.
+  web_url: "https://nextcloud.example.com"
+  # Disable adding "View in Nextcloud" link to Matrix messages
+  disable_web_link: false
+  # Nextcloud user credentials (use an app password)
+  username: "media-bridge"
+  password: "${NEXTCLOUD_PASSWORD}"
+
+matrix:
+  # Matrix homeserver base URL
+  homeserver_url: "https://matrix.example.com"
+  # Matrix homeserver domain (server_name)
+  homeserver_domain: "example.com"
+  # Path templates for each room ID. Only rooms with a template will be processed.
+  # Supported template variables: ${year}, ${month}, ${day}, ${room}, ${user}, ${file}
+  # Example: "/path/${year}/${room}/${user}/${file}"
+  room_path_template:
+    "!roomid1:example.com": "/bridge-media/${year}/${room}/${user}/${file}"
+    "!roomid2:example.com": "/custom-path/${year}-${month}/${user}/${file}"
+  appservice:
+    # Path to the Matrix appservice registration YAML
+    registration_path: "/data/registration.yaml"
+    # Bind address for the appservice HTTP listener
+    hostname: "0.0.0.0"
+    # Port for the appservice HTTP listener
+    port: 29334
+  admin:
+    # Enable deletion of original Matrix media after successful Nextcloud upload
+    # Requires Synapse admin API access
+    enabled: false
+    # Synapse admin access token (get via: synapse admin user creation or existing admin user)
+    # Keep this secret! Can also use environment variable: ${MATRIX_ADMIN_ACCESS_TOKEN}
+    access_token: ""
+
+media_proxy:
+  # Server name used in generated mxc:// URLs.
+  # For TLS deployments, include the port to skip .well-known/SRV lookups.
+  # For HTTP behind reverse proxy, use your public domain.
+  # Examples:
+  #   TLS direct: "nextcloud-media-bridge:29335"
+  #   HTTP behind reverse proxy: "media.example.com"
+  server_name: "nextcloud-media-bridge:29335"
+  # Bind address/port for the media proxy listener
+  listen_address: "0.0.0.0"
+  listen_port: 29335
+  # Use TLS (true) or plain HTTP (false).
+  # Set to false when running behind a reverse proxy that handles TLS.
+  # Default port: 29335 for TLS, 29336 for HTTP (if not specified)
+  use_tls: true
+  # TLS certificate/key for the media proxy listener (only used when use_tls: true).
+  # Leave empty to use a self-signed cert generated at startup.
+  tls_cert: ""
+  tls_key: ""
+  # Synapse-style signing key (ed25519 key line)
+  # Generate with: `mautrix-go` tools or a Synapse signing key generator
+  server_key: "ed25519 a1b2c3d4 ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+  # HMAC secret used to sign proxy media IDs (keep private)
+  hmac_secret: "${MEDIA_PROXY_HMAC_SECRET}"
