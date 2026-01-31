@@ -43,6 +43,17 @@ matrix:
     # Synapse admin access token (get via: synapse admin user creation or existing admin user)
     # Keep this secret! Can also use environment variable: ${MATRIX_ADMIN_ACCESS_TOKEN}
     access_token: ""
+  encryption:
+    # Enable end-to-end encryption (E2EE) support for decrypting encrypted media
+    enabled: false
+    # Pickle key for encrypting the crypto database (REQUIRED if encryption enabled)
+    # Generate with: openssl rand -hex 32
+    # WARNING: Never change this key after initial setup or all encryption keys will be lost!
+    # Keep this secret! Recommended: use environment variable ${ENCRYPTION_PICKLE_KEY}
+    pickle_key: ""
+    # Path to the SQLite database for storing encryption keys (auto-created)
+    # Ensure the /data volume is mounted and persistent
+    database_path: "/data/crypto.db"
 
 media_proxy:
   # Server name used in generated mxc:// URLs.

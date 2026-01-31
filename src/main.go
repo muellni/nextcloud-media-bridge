@@ -19,6 +19,7 @@ import (
 
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/appservice"
+	"maunium.net/go/mautrix/event"
 
 	"nextcloud-media-bridge/src/config"
 	"nextcloud-media-bridge/src/handlers"
@@ -56,7 +57,26 @@ func main() {
 	as.Log = zerolog.New(os.Stdout).With().Timestamp().Logger()
 
 	nextcloud := handlers.NewNextcloudClient(cfg.Nextcloud.BaseURL, cfg.Nextcloud.Username, cfg.Nextcloud.Password)
-	mediaHandler := handlers.NewMediaHandler(cfg, nextcloud, []byte(cfg.MediaProxy.HMACSecret), as)
+
+	// Initialize crypto helper if encryption is enabled
+	var cryptoHelper *handlers.CryptoHelper
+	if cfg.Matrix.Encryption.Enabled {
+		as.Log.Info().Msg("Initializing end-to-end encryption support")
+		var err error
+		cryptoHelper, err = handlers.NewCryptoHelper(cfg, as)
+		if err != nil {
+			log.Fatalf("Failed to create crypto helper: %v", err)
+		}
+		if err := cryptoHelper.Init(context.Background()); err != nil {
+			log.Fatalf("Failed to initialize crypto: %v", err)
+		}
+		go cryptoHelper.Start()
+		as.Log.Info().Msg("End-to-end encryption initialized successfully")
+	} else {
+		as.Log.Info().Msg("End-to-end encryption disabled")
+	}
+
+	mediaHandler := handlers.NewMediaHandler(cfg, nextcloud, []byte(cfg.MediaProxy.HMACSecret), as, cryptoHelper)
 
 	mediaProxy, err := handlers.NewMediaProxy(cfg, nextcloud, []byte(cfg.MediaProxy.HMACSecret))
 	if err != nil {
@@ -141,6 +161,16 @@ func main() {
 			// Process event in separate goroutine for concurrent handling
 			go func() {
 				defer func() { <-semaphore }() // Release semaphore slot when done
+
+				// Decrypt encrypted events if crypto is enabled
+				if evt.Type == event.EventEncrypted && cryptoHelper != nil {
+					decrypted, err := cryptoHelper.Decrypt(ctx, evt)
+					if err != nil {
+						as.Log.Error().Err(err).Str("event_id", evt.ID.String()).Msg("Failed to decrypt event")
+						return
+					}
+					evt = decrypted
+				}
 
 				if err := handlers.HandleAutoJoin(ctx, as, evt); err != nil {
 					as.Log.Error().Err(err).Msg("Failed to auto-join room")

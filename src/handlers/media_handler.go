@@ -26,6 +26,7 @@ type MediaHandler struct {
 	nextcloud     *NextcloudClient
 	mediaIDSecret []byte
 	as            *appservice.AppService
+	cryptoHelper  *CryptoHelper
 }
 
 var nextcloudMediaStateEvent = event.Type{Type: "com.nextcloud-media-bridge.media", Class: event.StateEventType}
@@ -35,8 +36,8 @@ func init() {
 	gob.Register(&mediaState{})
 }
 
-func NewMediaHandler(cfg *config.Config, nextcloud *NextcloudClient, mediaIDSecret []byte, as *appservice.AppService) *MediaHandler {
-	return &MediaHandler{config: cfg, nextcloud: nextcloud, mediaIDSecret: mediaIDSecret, as: as}
+func NewMediaHandler(cfg *config.Config, nextcloud *NextcloudClient, mediaIDSecret []byte, as *appservice.AppService, cryptoHelper *CryptoHelper) *MediaHandler {
+	return &MediaHandler{config: cfg, nextcloud: nextcloud, mediaIDSecret: mediaIDSecret, as: as, cryptoHelper: cryptoHelper}
 }
 
 func (h *MediaHandler) HandleMatrixEvent(ctx context.Context, as *appservice.AppService, evt *event.Event) error {
@@ -75,34 +76,101 @@ func (h *MediaHandler) HandleMatrixEvent(ctx context.Context, as *appservice.App
 		log.Printf("Skipping edit event %s in room %s", evt.ID.String(), evt.RoomID.String())
 		return nil
 	}
-	if msg.URL == "" {
-		log.Printf("Skipping media message without URL %s", evt.ID.String())
-		return nil
-	}
-	if msg.File != nil {
-		log.Printf("Skipping encrypted media from %s", evt.Sender.String())
-		return nil
-	}
+	// Handle encrypted vs unencrypted media
+	var mediaData []byte
+	var parsedURL id.ContentURI
+	var mimeType string
 
-	parsedURL, err := msg.URL.Parse()
-	if err != nil {
-		return fmt.Errorf("failed to parse media URL: %w", err)
-	}
-	if parsedURL.Homeserver == h.config.MediaProxy.ServerName {
-		if _, err := utils.DecodeMediaID(h.mediaIDSecret, parsedURL.FileID); err == nil {
-			log.Printf("Skipping already-proxied media %s (homeserver=%s)", evt.ID.String(), parsedURL.Homeserver)
+	if msg.File != nil {
+		// Encrypted media detected
+		if h.cryptoHelper == nil {
+			log.Printf("Skipping encrypted media (E2EE not enabled)")
 			return nil
 		}
-		log.Printf("Media URL homeserver matches proxy but media ID is not ours; continuing")
-	}
 
-	client := as.BotClient()
-	log.Printf("Downloading media %s from %s", evt.ID.String(), msg.URL)
-	resp, err := client.Download(ctx, parsedURL)
-	if err != nil {
-		return fmt.Errorf("failed to download media: %w", err)
+		log.Printf("Processing encrypted media from %s", evt.Sender.String())
+
+		// Parse the encrypted file URL
+		var err error
+		parsedURL, err = msg.File.URL.Parse()
+		if err != nil {
+			return fmt.Errorf("failed to parse encrypted media URL: %w", err)
+		}
+
+		// Download the encrypted file
+		client := h.as.BotClient()
+		encryptedResp, err := client.Download(ctx, parsedURL)
+		if err != nil {
+			return fmt.Errorf("failed to download encrypted media: %w", err)
+		}
+		defer encryptedResp.Body.Close()
+
+		// Read encrypted data
+		encryptedData, err := io.ReadAll(encryptedResp.Body)
+		if err != nil {
+			return fmt.Errorf("failed to read encrypted media: %w", err)
+		}
+
+		// Prepare encryption info for decryption
+		if err := msg.File.PrepareForDecryption(); err != nil {
+			return fmt.Errorf("failed to prepare for decryption: %w", err)
+		}
+
+		// Decrypt the file
+		mediaData, err = msg.File.Decrypt(encryptedData)
+		if err != nil {
+			return fmt.Errorf("failed to decrypt media file: %w", err)
+		}
+
+		log.Printf("Successfully decrypted media %s (%d bytes)", evt.ID.String(), len(mediaData))
+
+		// Get MIME type from message info
+		if msg.Info != nil && msg.Info.MimeType != "" {
+			mimeType = msg.Info.MimeType
+		}
+	} else {
+		// Unencrypted media
+		if msg.URL == "" {
+			log.Printf("Skipping media message without URL %s", evt.ID.String())
+			return nil
+		}
+
+		var err error
+		parsedURL, err = msg.URL.Parse()
+		if err != nil {
+			return fmt.Errorf("failed to parse media URL: %w", err)
+		}
+
+		// Skip already-proxied media
+		if parsedURL.Homeserver == h.config.MediaProxy.ServerName {
+			if _, err := utils.DecodeMediaID(h.mediaIDSecret, parsedURL.FileID); err == nil {
+				log.Printf("Skipping already-proxied media %s (homeserver=%s)", evt.ID.String(), parsedURL.Homeserver)
+				return nil
+			}
+			log.Printf("Media URL homeserver matches proxy but media ID is not ours; continuing")
+		}
+
+		// Download unencrypted media
+		client := as.BotClient()
+		log.Printf("Downloading media %s from %s", evt.ID.String(), msg.URL)
+		resp, err := client.Download(ctx, parsedURL)
+		if err != nil {
+			return fmt.Errorf("failed to download media: %w", err)
+		}
+		defer resp.Body.Close()
+
+		// Read media data
+		mediaData, err = io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("failed to read media: %w", err)
+		}
+
+		// Get MIME type from response or message
+		mimeType = resp.Header.Get("Content-Type")
+		if msg.Info != nil && msg.Info.MimeType != "" {
+			mimeType = msg.Info.MimeType
+		}
 	}
-	defer resp.Body.Close()
 
 	filename := msg.GetFileName()
 	if filename == "" {
@@ -127,10 +195,12 @@ func (h *MediaHandler) HandleMatrixEvent(ctx context.Context, as *appservice.App
 	finalPath := nextcloudPath
 	finalFilename := filename
 	uploadNeeded := true
+	contentLength := int64(len(mediaData))
+
 	if exists, size, err := h.nextcloud.Stat(nextcloudPath); err != nil {
 		return fmt.Errorf("failed to check existing file: %w", err)
 	} else if exists {
-		if resp.ContentLength > 0 && size == resp.ContentLength {
+		if contentLength > 0 && size == contentLength {
 			log.Printf("Nextcloud file already exists with matching size, reusing path %s", nextcloudPath)
 			uploadNeeded = false
 		} else {
@@ -153,14 +223,11 @@ func (h *MediaHandler) HandleMatrixEvent(ctx context.Context, as *appservice.App
 		}
 	}
 	if uploadNeeded {
-		if err := h.nextcloud.UploadReader(finalPath, resp.Body, resp.ContentLength); err != nil {
+		// Upload from mediaData byte array
+		mediaReader := strings.NewReader(string(mediaData))
+		if err := h.nextcloud.UploadReader(finalPath, mediaReader, contentLength); err != nil {
 			return fmt.Errorf("failed to upload to nextcloud: %w", err)
 		}
-	}
-
-	mimeType := resp.Header.Get("Content-Type")
-	if msg.Info != nil && msg.Info.MimeType != "" {
-		mimeType = msg.Info.MimeType
 	}
 
 	mediaID, err := utils.EncodeMediaID(h.mediaIDSecret, utils.MediaRef{
@@ -179,8 +246,8 @@ func (h *MediaHandler) HandleMatrixEvent(ctx context.Context, as *appservice.App
 		newInfo = &event.FileInfo{}
 	}
 	newInfo.MimeType = mimeType
-	if resp.ContentLength > 0 {
-		newInfo.Size = int(resp.ContentLength)
+	if contentLength > 0 {
+		newInfo.Size = int(contentLength)
 	}
 
 	// Generate Nextcloud web link if configured

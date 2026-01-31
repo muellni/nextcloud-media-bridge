@@ -30,6 +30,11 @@ type Config struct {
 			Enabled     bool   `yaml:"enabled"`      // Enable Synapse admin API for media deletion
 			AccessToken string `yaml:"access_token"` // Admin access token for Synapse admin API
 		} `yaml:"admin"`
+		Encryption struct {
+			Enabled      bool   `yaml:"enabled"`
+			PickleKey    string `yaml:"pickle_key"`
+			DatabasePath string `yaml:"database_path"`
+		} `yaml:"encryption"`
 	} `yaml:"matrix"`
 	MediaProxy struct {
 		ServerName string `yaml:"server_name"`
@@ -88,6 +93,11 @@ func LoadConfigFromEnv() *Config {
 				Enabled     bool   `yaml:"enabled"`
 				AccessToken string `yaml:"access_token"`
 			} `yaml:"admin"`
+			Encryption struct {
+				Enabled      bool   `yaml:"enabled"`
+				PickleKey    string `yaml:"pickle_key"`
+				DatabasePath string `yaml:"database_path"`
+			} `yaml:"encryption"`
 		}{
 			HomeserverURL:    os.Getenv("MATRIX_HOMESERVER_URL"),
 			HomeserverDomain: os.Getenv("MATRIX_HOMESERVER_DOMAIN"),
@@ -107,6 +117,15 @@ func LoadConfigFromEnv() *Config {
 			}{
 				Enabled:     parseBool(os.Getenv("MATRIX_ADMIN_ENABLED")),
 				AccessToken: os.Getenv("MATRIX_ADMIN_ACCESS_TOKEN"),
+			},
+			Encryption: struct {
+				Enabled      bool   `yaml:"enabled"`
+				PickleKey    string `yaml:"pickle_key"`
+				DatabasePath string `yaml:"database_path"`
+			}{
+				Enabled:      parseBool(os.Getenv("ENCRYPTION_ENABLED")),
+				PickleKey:    os.Getenv("ENCRYPTION_PICKLE_KEY"),
+				DatabasePath: envOrDefault("ENCRYPTION_DATABASE_PATH", "/data/crypto.db"),
 			},
 		},
 		MediaProxy: struct {

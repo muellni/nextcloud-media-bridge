@@ -1,6 +1,9 @@
 # Use the official Golang image to build the application
 FROM golang:1.24-alpine AS builder
 
+# Install build dependencies for CGo, SQLite, and Olm (for Matrix E2EE)
+RUN apk add --no-cache gcc g++ musl-dev sqlite-dev olm-dev
+
 # Set the Current Working Directory inside the container
 WORKDIR /app
 
@@ -13,14 +16,14 @@ RUN go mod download
 # Copy the source code into the container
 COPY src/ ./src/
 
-# Build the Go app with static linking
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -ldflags="-w -s" -o nextcloud-media-bridge ./src
+# Build the Go app with CGo enabled for SQLite support
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -a -ldflags="-w -s" -o nextcloud-media-bridge ./src
 
 # Use a minimal image for the final container
 FROM alpine:latest
 
-# Install ca-certificates for HTTPS connections
-RUN apk --no-cache add ca-certificates
+# Install ca-certificates for HTTPS connections, SQLite runtime, and Olm runtime libraries
+RUN apk --no-cache add ca-certificates sqlite-libs olm
 
 # Create a non-root user
 RUN addgroup -g 1000 bridge && \
